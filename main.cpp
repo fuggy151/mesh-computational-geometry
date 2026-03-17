@@ -101,63 +101,100 @@ struct MeshSewn {
         return true;
     }
 
-int split_triangle(int fi, Vec3 pos)
-{
-    Face old = faces[fi];
-    int a = old.v[0], b = old.v[1], c = old.v[2];
-    int n0 = old.neigh[0], n1 = old.neigh[1], n2 = old.neigh[2];
+    int split_triangle(int fi, Vec3 pos)
+    {
+        Face old = faces[fi];
+        int a = old.v[0], b = old.v[1], c = old.v[2];
+        int n0 = old.neigh[0], n1 = old.neigh[1], n2 = old.neigh[2];
 
-    int m = (int)vertices.size();
-    vertices.push_back(Vertex{pos});
+        int m = (int)vertices.size();
+        vertices.push_back(Vertex{pos});
 
-    faces[fi] = Face(a, b, m);
-    int f1 = (int)faces.size(); faces.push_back(Face(b, c, m));
-    int f2 = (int)faces.size(); faces.push_back(Face(c, a, m));
+        faces[fi] = Face(a, b, m);
+        int f1 = (int)faces.size(); faces.push_back(Face(b, c, m));
+        int f2 = (int)faces.size(); faces.push_back(Face(c, a, m));
 
-    sew(fi, 1,  f1, 2);
-    sew(f1, 1,  f2, 2);
-    sew(f2, 1,  fi, 2);
+        sew(fi, 1,  f1, 2);
+        sew(f1, 1,  f2, 2);
+        sew(f2, 1,  fi, 2);
 
-    faces[fi].neigh[0] = n0;
-    faces[f1].neigh[0] = n1;
-    faces[f2].neigh[0] = n2;
+        faces[fi].neigh[0] = n0;
+        faces[f1].neigh[0] = n1;
+        faces[f2].neigh[0] = n2;
 
-    auto fix_neigh = [&](int fj, int old_fi, int new_fi) {
-        if (fj == -1) return;
-        for (int e = 0; e < 3; ++e)
-            if (faces[fj].neigh[e] == old_fi)
-                faces[fj].neigh[e] = new_fi;
-    };
-    fix_neigh(n1, fi, f1);
-    fix_neigh(n2, fi, f2);
+        auto fix_neigh = [&](int fj, int old_fi, int new_fi) {
+            if (fj == -1) return;
+            for (int e = 0; e < 3; ++e)
+                if (faces[fj].neigh[e] == old_fi)
+                    faces[fj].neigh[e] = new_fi;
+        };
+        fix_neigh(n1, fi, f1);
+        fix_neigh(n2, fi, f2);
 
-    update_oneFace_per_vertex();
-    return m;
-}
+        update_oneFace_per_vertex();
+        return m;
+    }
 
-int split_edge(int fi, int ei, Vec3 pos)
-{
-    int a = faces[fi].v[ei];
-    int b = faces[fi].v[(ei+1)%3];
-    int c = faces[fi].v[(ei+2)%3];
+    int split_edge(int fi, int ei, Vec3 pos)
+    {
+        int a = faces[fi].v[ei];
+        int b = faces[fi].v[(ei+1)%3];
+        int c = faces[fi].v[(ei+2)%3];
 
-    int fj     = faces[fi].neigh[ei];
-    int fi_bc  = faces[fi].neigh[(ei+1)%3];
-    int fi_ca  = faces[fi].neigh[(ei+2)%3];
+        int fj     = faces[fi].neigh[ei];
+        int fi_bc  = faces[fi].neigh[(ei+1)%3];
+        int fi_ca  = faces[fi].neigh[(ei+2)%3];
 
-    int m = (int)vertices.size();
-    vertices.push_back(Vertex{pos});
+        int m = (int)vertices.size();
+        vertices.push_back(Vertex{pos});
 
-    if (fj == -1) {
-        // fi=(a,b,c) → fi=(a,m,c) + f1=(m,b,c)
+        if (fj == -1) {
+            // fi=(a,b,c) → fi=(a,m,c) + f1=(m,b,c)
+            int f1 = (int)faces.size(); faces.push_back(Face(m, b, c));
+            faces[fi] = Face(a, m, c);
+
+            sew(fi, 1, f1, 2);      // m-c shared
+
+            faces[fi].neigh[2] = fi_ca;
+            faces[f1].neigh[1] = fi_bc;
+            // edge a-m and m-b remain open (-1)
+
+            auto fix = [&](int fk, int old_f, int new_f) {
+                if (fk == -1) return;
+                for (int e = 0; e < 3; ++e)
+                    if (faces[fk].neigh[e] == old_f)
+                        faces[fk].neigh[e] = new_f;
+            };
+            fix(fi_bc, fi, f1);
+
+            update_oneFace_per_vertex();
+            return m;
+        }
+
+        int ej    = find_edge_index(faces[fj], a, b);
+        int d     = faces[fj].v[(ej+2)%3];
+        int fj_bd = faces[fj].neigh[(ej+1)%3];
+        int fj_da = faces[fj].neigh[(ej+2)%3];
+
+        // New faces
         int f1 = (int)faces.size(); faces.push_back(Face(m, b, c));
+        int f2 = (int)faces.size(); faces.push_back(Face(b, m, d));
+
+        // Rebuild original faces
         faces[fi] = Face(a, m, c);
+        faces[fj] = Face(a, d, m);
 
-        sew(fi, 1, f1, 2);      // m-c shared
+        // Internal sews
+        sew(fi,  0, fj,  2);   // a-m ↔ m-a
+        sew(fi,  1, f1,  2);   // m-c ↔ c-m
+        sew(fj,  1, f2,  1);   // d-m ↔ m-d
+        sew(f1,  0, f2,  0);   // m-b ↔ b-m
 
+        // External neighbours
         faces[fi].neigh[2] = fi_ca;
         faces[f1].neigh[1] = fi_bc;
-        // edge a-m and m-b remain open (-1)
+        faces[fj].neigh[0] = fj_da;
+        faces[f2].neigh[2] = fj_bd;
 
         auto fix = [&](int fk, int old_f, int new_f) {
             if (fk == -1) return;
@@ -166,96 +203,152 @@ int split_edge(int fi, int ei, Vec3 pos)
                     faces[fk].neigh[e] = new_f;
         };
         fix(fi_bc, fi, f1);
+        fix(fj_bd, fj, f2);
 
         update_oneFace_per_vertex();
         return m;
     }
 
-    int ej    = find_edge_index(faces[fj], a, b);
-    int d     = faces[fj].v[(ej+2)%3];
-    int fj_bd = faces[fj].neigh[(ej+1)%3];
-    int fj_da = faces[fj].neigh[(ej+2)%3];
+    void flip_edge(int fi, int ei)
+    {
+        int fj = faces[fi].neigh[ei];
+        if (fj == -1) return;
 
-    // New faces
-    int f1 = (int)faces.size(); faces.push_back(Face(m, b, c));
-    int f2 = (int)faces.size(); faces.push_back(Face(b, m, d));
+        // Get vertices of face fi
+        int a = faces[fi].v[ei];
+        int b = faces[fi].v[(ei+1)%3];
+        int c = faces[fi].v[(ei+2)%3];
 
-    // Rebuild original faces
-    faces[fi] = Face(a, m, c);
-    faces[fj] = Face(a, d, m);
+        // Find edge (a,b) in neighboring face fj
+        int ej = find_edge_index(faces[fj], a, b);
+        int d = faces[fj].v[(ej+2)%3];
 
-    // Internal sews
-    sew(fi,  0, fj,  2);   // a-m ↔ m-a
-    sew(fi,  1, f1,  2);   // m-c ↔ c-m
-    sew(fj,  1, f2,  1);   // d-m ↔ m-d
-    sew(f1,  0, f2,  0);   // m-b ↔ b-m
+        // Store all neighbors before modification
+        int fi_ac = faces[fi].neigh[(ei+2)%3];
+        int fi_bc = faces[fi].neigh[(ei+1)%3];
+        int fj_bd = faces[fj].neigh[(ej+2)%3];
+        int fj_ad = faces[fj].neigh[(ej+1)%3];
 
-    // External neighbours
-    faces[fi].neigh[2] = fi_ca;
-    faces[f1].neigh[1] = fi_bc;
-    faces[fj].neigh[0] = fj_da;
-    faces[f2].neigh[2] = fj_bd;
+        faces[fi] = Face(a, d, c);
+        faces[fj] = Face(b, c, d);
 
-    auto fix = [&](int fk, int old_f, int new_f) {
-        if (fk == -1) return;
-        for (int e = 0; e < 3; ++e)
-            if (faces[fk].neigh[e] == old_f)
-                faces[fk].neigh[e] = new_f;
-    };
-    fix(fi_bc, fi, f1);
-    fix(fj_bd, fj, f2);
+        faces[fi].neigh[0] = fj_ad;
+        faces[fi].neigh[1] = fj;
+        faces[fi].neigh[2] = fi_ac;
 
-    update_oneFace_per_vertex();
-    return m;
-}
+        faces[fj].neigh[0] = fi_bc;
+        faces[fj].neigh[1] = fi;
+        faces[fj].neigh[2] = fj_bd;
 
-void flip_edge(int fi, int ei)
-{
-    int fj = faces[fi].neigh[ei];
-    if (fj == -1) return;
+        sew(fi, 1, fj, 1);
 
-    // Get vertices of face fi
-    int a = faces[fi].v[ei];
-    int b = faces[fi].v[(ei+1)%3];
-    int c = faces[fi].v[(ei+2)%3];
-
-    // Find edge (a,b) in neighboring face fj
-    int ej = find_edge_index(faces[fj], a, b);
-    int d = faces[fj].v[(ej+2)%3];
-
-    // Store all neighbors before modification
-    int fi_ac = faces[fi].neigh[(ei+2)%3];
-    int fi_bc = faces[fi].neigh[(ei+1)%3];
-    int fj_bd = faces[fj].neigh[(ej+2)%3];
-    int fj_ad = faces[fj].neigh[(ej+1)%3];
-
-    faces[fi] = Face(a, d, c);
-    faces[fj] = Face(b, c, d);
-
-    faces[fi].neigh[0] = fj_ad;
-    faces[fi].neigh[1] = fj;
-    faces[fi].neigh[2] = fi_ac;
-
-    faces[fj].neigh[0] = fi_bc;
-    faces[fj].neigh[1] = fi;
-    faces[fj].neigh[2] = fj_bd;
-
-    sew(fi, 1, fj, 1);
-
-    auto fix_neigh = [&](int fk, int old_f, int new_f) {
-        if (fk == -1) return;
-        for (int e = 0; e < 3; ++e) {
-            if (faces[fk].neigh[e] == old_f) {
-                faces[fk].neigh[e] = new_f;
+        auto fix_neigh = [&](int fk, int old_f, int new_f) {
+            if (fk == -1) return;
+            for (int e = 0; e < 3; ++e) {
+                if (faces[fk].neigh[e] == old_f) {
+                    faces[fk].neigh[e] = new_f;
+                }
             }
+        };
+
+        fix_neigh(fi_bc, fi, fj);
+        fix_neigh(fj_ad, fj, fi);
+
+        update_oneFace_per_vertex();
+    }
+
+    double orientation(const Vec3& A, const Vec3& B, const Vec3& C) const
+    {
+        return (B.x - A.x) * (C.y - A.y)
+            - (B.y - A.y) * (C.x - A.x);
+    }
+
+    double in_triangle(const Vec3& A, const Vec3& B, const Vec3& C, const Vec3& P) const
+    {
+        double d0 = orientation(A, B, P);
+        double d1 = orientation(B, C, P);
+        double d2 = orientation(C, A, P);
+
+        bool all_pos = (d0 >= 0) && (d1 >= 0) && (d2 >= 0);
+        bool all_neg = (d0 <= 0) && (d1 <= 0) && (d2 <= 0);
+
+        if (!all_pos && !all_neg) return -1.0;  // outside
+
+        if (d0 == 0 || d1 == 0 || d2 == 0) return 0.0;
+
+        return 1.0;
+    }
+
+    void make_bounding_box(const std::vector<Vec3>& pts, double margin = 1.0)
+    {
+        double xmin = pts[0].x, xmax = pts[0].x;
+        double ymin = pts[0].y, ymax = pts[0].y;
+        for (const auto& p : pts) {
+            xmin = std::min(xmin, p.x); xmax = std::max(xmax, p.x);
+            ymin = std::min(ymin, p.y); ymax = std::max(ymax, p.y);
         }
-    };
 
-    fix_neigh(fi_bc, fi, fj);
-    fix_neigh(fj_ad, fj, fi);
+        // Add margin
+        xmin -= margin; ymin -= margin;
+        xmax += margin; ymax += margin;
 
-    update_oneFace_per_vertex();
-}
+        vertices.clear();
+        faces.clear();
+        vertices.push_back(Vertex{{xmin, ymin, 0}});  // 0
+        vertices.push_back(Vertex{{xmax, ymin, 0}});  // 1
+        vertices.push_back(Vertex{{xmax, ymax, 0}});  // 2
+        vertices.push_back(Vertex{{xmin, ymax, 0}});  // 3
+
+        faces.push_back(Face(0, 1, 2));
+        faces.push_back(Face(0, 2, 3));
+
+        sew(0, 2, 1, 0);
+
+        update_oneFace_per_vertex();
+    }
+
+    int find_triangle(const Vec3& P, int& boundary_edge) const
+    {
+        boundary_edge = -1;
+        for (int fi = 0; fi < (int)faces.size(); ++fi) {
+            const Face& f = faces[fi];
+            const Vec3& A = vertices[f.v[0]].p;
+            const Vec3& B = vertices[f.v[1]].p;
+            const Vec3& C = vertices[f.v[2]].p;
+
+            double d = in_triangle(A, B, C, P);
+            if (d < 0) continue;  // outside this face
+
+            if (d == 0) {
+                // On boundary — find which edge
+                double d0 = orientation(A, B, P);
+                double d1 = orientation(B, C, P);
+                double d2 = orientation(C, A, P);
+                if (d0 == 0) boundary_edge = 0;
+                else if (d1 == 0) boundary_edge = 1;
+                else if (d2 == 0) boundary_edge = 2;
+            }
+            return fi;
+        }
+        return -1;
+    }
+
+    int insert_point(const Vec3& P)
+    {
+        int boundary_edge = -1;
+        int fi = find_triangle(P, boundary_edge);
+
+        if (fi == -1) {
+            std::cout << "[insert_point] Point outside bounding box!\n";
+            return -1;
+        }
+
+        if (boundary_edge == -1) {
+            return split_triangle(fi, P);
+        } else {
+            return split_edge(fi, boundary_edge, P);
+        }
+    }
 
     bool save_off(const std::string& path) const {
         std::ofstream out(path);
@@ -1077,6 +1170,80 @@ int main()
             if (ok) {
                 std::cout << "All neighbors are symmetric\n";
             }            
+        }
+        {
+            MeshSewn m;
+
+            Vec3 A{0, 0, 0};
+            Vec3 B{1, 0, 0};
+            Vec3 C{0, 1, 0};
+            Vec3 D{0, -1, 0};
+            Vec3 E{2, 0, 0};
+
+            double r1 = m.orientation(A, B, C);
+            double r2 = m.orientation(A, B, D);
+            double r3 = m.orientation(A, B, E);
+
+            std::cout << "\n== orientation test ==\n";
+            std::cout << "A,B,C (CCW expected > 0): " << r1
+                    << (r1 > 0 ? "  [OK]" : "  [FAIL]") << "\n";
+            std::cout << "A,B,D (CW  expected < 0): " << r2
+                    << (r2 < 0 ? "  [OK]" : "  [FAIL]") << "\n";
+            std::cout << "A,B,E (collinear = 0)   : " << r3
+                    << (r3 == 0 ? "  [OK]" : "  [FAIL]") << "\n";
+        }
+
+        {
+            MeshSewn m;
+
+            Vec3 A{0, 0, 0};
+            Vec3 B{4, 0, 0};
+            Vec3 C{0, 4, 0};
+
+            Vec3 P_inside   {1, 1, 0};
+            Vec3 P_outside  {3, 3, 0};
+            Vec3 P_boundary {2, 0, 0};
+            Vec3 P_vertex   {0, 0, 0};
+
+            double r1 = m.in_triangle(A, B, C, P_inside);
+            double r2 = m.in_triangle(A, B, C, P_outside);
+            double r3 = m.in_triangle(A, B, C, P_boundary);
+            double r4 = m.in_triangle(A, B, C, P_vertex);
+
+            std::cout << "\n== in_triangle test ==\n";
+            std::cout << "P inside (expected > 0): " << r1
+                    << (r1 > 0  ? "[OK]" : "[FAIL]") << "\n";
+            std::cout << "P outside (expected < 0): " << r2
+                    << (r2 < 0  ? "[OK]" : "[FAIL]") << "\n";
+            std::cout << "P boundary (expected = 0): " << r3
+                    << (r3 == 0 ? "[OK]" : "[FAIL]") << "\n";
+            std::cout << "P vertex (expected = 0): " << r4
+                    << (r4 == 0 ? "[OK]" : "[FAIL]") << "\n";
+        }
+
+        {
+            MeshSewn m;
+
+            // Points to insert
+            std::vector<Vec3> pts = {
+                {0.2, 0.2, 0}, {0.7, 0.2, 0}, {0.5, 0.7, 0},
+                {0.3, 0.5, 0}, {0.6, 0.5, 0}
+            };
+
+            m.make_bounding_box(pts, 0.5);
+            std::cout << "\n== naive insertion test ==\n";
+            std::cout << "Initial: " << m.vertices.size()
+                    << " vertices, " << m.faces.size() << " faces\n";
+
+            for (int i = 0; i < (int)pts.size(); ++i) {
+                int vi = m.insert_point(pts[i]);
+                std::cout << "Insert point " << i
+                        << " -> vertex " << vi
+                        << " | faces: " << m.faces.size() << "\n";
+            }
+
+            bool ok = m.check_sewing_verbose("naive_insertion");
+            m.save_off("data/naive_insertion.off");
         }
 
         std::cout << "\nMeshes created and saved.\n";
