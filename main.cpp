@@ -101,6 +101,162 @@ struct MeshSewn {
         return true;
     }
 
+int split_triangle(int fi, Vec3 pos)
+{
+    Face old = faces[fi];
+    int a = old.v[0], b = old.v[1], c = old.v[2];
+    int n0 = old.neigh[0], n1 = old.neigh[1], n2 = old.neigh[2];
+
+    int m = (int)vertices.size();
+    vertices.push_back(Vertex{pos});
+
+    faces[fi] = Face(a, b, m);
+    int f1 = (int)faces.size(); faces.push_back(Face(b, c, m));
+    int f2 = (int)faces.size(); faces.push_back(Face(c, a, m));
+
+    sew(fi, 1,  f1, 2);
+    sew(f1, 1,  f2, 2);
+    sew(f2, 1,  fi, 2);
+
+    faces[fi].neigh[0] = n0;
+    faces[f1].neigh[0] = n1;
+    faces[f2].neigh[0] = n2;
+
+    auto fix_neigh = [&](int fj, int old_fi, int new_fi) {
+        if (fj == -1) return;
+        for (int e = 0; e < 3; ++e)
+            if (faces[fj].neigh[e] == old_fi)
+                faces[fj].neigh[e] = new_fi;
+    };
+    fix_neigh(n1, fi, f1);
+    fix_neigh(n2, fi, f2);
+
+    update_oneFace_per_vertex();
+    return m;
+}
+
+int split_edge(int fi, int ei, Vec3 pos)
+{
+    int a = faces[fi].v[ei];
+    int b = faces[fi].v[(ei+1)%3];
+    int c = faces[fi].v[(ei+2)%3];
+
+    int fj     = faces[fi].neigh[ei];
+    int fi_bc  = faces[fi].neigh[(ei+1)%3];
+    int fi_ca  = faces[fi].neigh[(ei+2)%3];
+
+    int m = (int)vertices.size();
+    vertices.push_back(Vertex{pos});
+
+    if (fj == -1) {
+        // fi=(a,b,c) → fi=(a,m,c) + f1=(m,b,c)
+        int f1 = (int)faces.size(); faces.push_back(Face(m, b, c));
+        faces[fi] = Face(a, m, c);
+
+        sew(fi, 1, f1, 2);      // m-c shared
+
+        faces[fi].neigh[2] = fi_ca;
+        faces[f1].neigh[1] = fi_bc;
+        // edge a-m and m-b remain open (-1)
+
+        auto fix = [&](int fk, int old_f, int new_f) {
+            if (fk == -1) return;
+            for (int e = 0; e < 3; ++e)
+                if (faces[fk].neigh[e] == old_f)
+                    faces[fk].neigh[e] = new_f;
+        };
+        fix(fi_bc, fi, f1);
+
+        update_oneFace_per_vertex();
+        return m;
+    }
+
+    int ej    = find_edge_index(faces[fj], a, b);
+    int d     = faces[fj].v[(ej+2)%3];
+    int fj_bd = faces[fj].neigh[(ej+1)%3];
+    int fj_da = faces[fj].neigh[(ej+2)%3];
+
+    // New faces
+    int f1 = (int)faces.size(); faces.push_back(Face(m, b, c));
+    int f2 = (int)faces.size(); faces.push_back(Face(b, m, d));
+
+    // Rebuild original faces
+    faces[fi] = Face(a, m, c);
+    faces[fj] = Face(a, d, m);
+
+    // Internal sews
+    sew(fi,  0, fj,  2);   // a-m ↔ m-a
+    sew(fi,  1, f1,  2);   // m-c ↔ c-m
+    sew(fj,  1, f2,  1);   // d-m ↔ m-d
+    sew(f1,  0, f2,  0);   // m-b ↔ b-m
+
+    // External neighbours
+    faces[fi].neigh[2] = fi_ca;
+    faces[f1].neigh[1] = fi_bc;
+    faces[fj].neigh[0] = fj_da;
+    faces[f2].neigh[2] = fj_bd;
+
+    auto fix = [&](int fk, int old_f, int new_f) {
+        if (fk == -1) return;
+        for (int e = 0; e < 3; ++e)
+            if (faces[fk].neigh[e] == old_f)
+                faces[fk].neigh[e] = new_f;
+    };
+    fix(fi_bc, fi, f1);
+    fix(fj_bd, fj, f2);
+
+    update_oneFace_per_vertex();
+    return m;
+}
+
+void flip_edge(int fi, int ei)
+{
+    int fj = faces[fi].neigh[ei];
+    if (fj == -1) return;
+
+    // Get vertices of face fi
+    int a = faces[fi].v[ei];
+    int b = faces[fi].v[(ei+1)%3];
+    int c = faces[fi].v[(ei+2)%3];
+
+    // Find edge (a,b) in neighboring face fj
+    int ej = find_edge_index(faces[fj], a, b);
+    int d = faces[fj].v[(ej+2)%3];
+
+    // Store all neighbors before modification
+    int fi_ac = faces[fi].neigh[(ei+2)%3];
+    int fi_bc = faces[fi].neigh[(ei+1)%3];
+    int fj_bd = faces[fj].neigh[(ej+2)%3];
+    int fj_ad = faces[fj].neigh[(ej+1)%3];
+
+    faces[fi] = Face(a, d, c);
+    faces[fj] = Face(b, c, d);
+
+    faces[fi].neigh[0] = fj_ad;
+    faces[fi].neigh[1] = fj;
+    faces[fi].neigh[2] = fi_ac;
+
+    faces[fj].neigh[0] = fi_bc;
+    faces[fj].neigh[1] = fi;
+    faces[fj].neigh[2] = fj_bd;
+
+    sew(fi, 1, fj, 1);
+
+    auto fix_neigh = [&](int fk, int old_f, int new_f) {
+        if (fk == -1) return;
+        for (int e = 0; e < 3; ++e) {
+            if (faces[fk].neigh[e] == old_f) {
+                faces[fk].neigh[e] = new_f;
+            }
+        }
+    };
+
+    fix_neigh(fi_bc, fi, fj);
+    fix_neigh(fj_ad, fj, fi);
+
+    update_oneFace_per_vertex();
+}
+
     bool save_off(const std::string& path) const {
         std::ofstream out(path);
         if (!out) return false;
@@ -453,6 +609,86 @@ public:
                 curvature_initialized = true;
             }
         }
+            
+        static bool keyT_pressed = false;
+        static bool keyE_pressed = false;
+        static bool keyR_pressed = false;
+
+        if(key_state('t') || key_state('T'))
+        {
+            if(!keyT_pressed)
+            {
+                if(split_face_index < (int)ref.faces.size())
+                {
+                    const Face& f = ref.faces[split_face_index];
+                    const Vec3& p0 = ref.vertices[f.v[0]].p;
+                    const Vec3& p1 = ref.vertices[f.v[1]].p;
+                    const Vec3& p2 = ref.vertices[f.v[2]].p;
+                    Vec3 centroid = {
+                        (p0.x + p1.x + p2.x) / 3.0,
+                        (p0.y + p1.y + p2.y) / 3.0,
+                        (p0.z + p1.z + p2.z) / 3.0
+                    };
+                    ref.split_triangle(split_face_index, centroid);
+                    rebuild_position_buffer();
+                    std::cout << "[T] split_triangle face " << split_face_index
+                            << ": " << ref.faces.size() << " faces, "
+                            << ref.vertices.size() << " vertices\n";
+                    split_face_index++;
+                }
+                else
+                    std::cout << "[T] всі грані вже розділені, натисни R для reset\n";
+
+                keyT_pressed = true;
+            }
+        }
+        else keyT_pressed = false;
+
+        if(key_state('e') || key_state('E'))
+        {
+            if(!keyE_pressed)
+            {
+                if(split_face_index < (int)ref.faces.size())
+                {
+                    int fi = split_face_index, ei = 0;
+                    int a = ref.faces[fi].v[ei];
+                    int b = ref.faces[fi].v[(ei+1)%3];
+                    Vec3 pa = ref.vertices[a].p;
+                    Vec3 pb = ref.vertices[b].p;
+                    Vec3 mid = {
+                        (pa.x + pb.x) / 2.0,
+                        (pa.y + pb.y) / 2.0,
+                        (pa.z + pb.z) / 2.0
+                    };
+                    ref.split_edge(fi, ei, mid);
+                    rebuild_position_buffer();
+                    std::cout << "[E] split_edge face " << split_face_index
+                            << ": " << ref.faces.size() << " faces, "
+                            << ref.vertices.size() << " vertices\n";
+                    split_face_index++;
+                }
+                else
+                    std::cout << "[E] всі грані вже розділені, натисни R для reset\n";
+
+                keyE_pressed = true;
+            }
+        }
+        else keyE_pressed = false;
+
+        if(key_state('r') || key_state('R'))
+        {
+            if(!keyR_pressed)
+            {
+                ref = make_pyramid_sewn();
+                split_face_index = 0;
+                rebuild_position_buffer();
+                std::cout << "[R] reset: "
+                        << ref.faces.size() << " faces, "
+                        << ref.vertices.size() << " vertices\n";
+                keyR_pressed = true;
+            }
+        }
+        else keyR_pressed = false;
 
         // transforms 
         Transform view = camera().view();
@@ -554,6 +790,44 @@ private:
         glBufferSubData(GL_ARRAY_BUFFER, 0,
                         color_buffer.size() * sizeof(float),
                         color_buffer.data());
+    }
+
+    int split_face_index = 0;
+    void rebuild_position_buffer()
+    {
+        vertex_count = (int)ref.faces.size() * 3;
+
+        std::vector<float> positions;
+        positions.reserve(vertex_count * 3);
+        for(const auto& f : ref.faces)
+            for(int i = 0; i < 3; i++)
+            {
+                const auto& p = ref.vertices[f.v[i]].p;
+                positions.push_back((float)p.x);
+                positions.push_back((float)p.y);
+                positions.push_back((float)p.z);
+            }
+
+        color_buffer.assign(vertex_count * 4, 0.0f);
+        for(int i = 0; i < vertex_count; i++)
+        {
+            color_buffer[i*4 + 0] = 0.1f;
+            color_buffer[i*4 + 1] = 0.3f;
+            color_buffer[i*4 + 2] = 1.0f;
+            color_buffer[i*4 + 3] = 1.0f;
+        }
+
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_position);
+        glBufferData(GL_ARRAY_BUFFER,
+                    positions.size() * sizeof(float),
+                    positions.data(),
+                    GL_STATIC_DRAW);
+
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_color);
+        glBufferData(GL_ARRAY_BUFFER,
+                    color_buffer.size() * sizeof(float),
+                    color_buffer.data(),
+                    GL_DYNAMIC_DRAW);
     }
 
     void reset_colors_to_blue()
@@ -700,6 +974,7 @@ int main()
     int choice;
     std::cout << "1 - create test meshes only\n";
     std::cout << "2 - load queen and open viewer\n";
+    std::cout << "3 - split operations\n";
     std::cin >> choice;
 
     if(choice == 1)
@@ -721,6 +996,89 @@ int main()
         pyr.save_off("data/pyramid.off");
         box.save_off("data/bbox_infinite.off");
 
+        {
+            std::cout << "\n========== TEST split_triangle ==========\n";
+            auto m1 = make_tetra_sewn();
+            std::cout << "Initial tetrahedron:\n";
+            m1.print_neighbors("before_split");
+            int new_v = m1.split_triangle(0, {0.33, 0.33, 0.0});
+            std::cout << "Created new vertex index: " << new_v << "\n";
+            std::cout << "After split_triangle:\n";
+            m1.check_sewing_verbose("split_triangle");
+            std::cout << "Vertices count: " << m1.vertices.size() << " (was 4)\n";
+            std::cout << "Faces count: " << m1.faces.size() << " (was 4)\n";
+        }
+        
+        {
+            std::cout << "\n========== TEST split_edge ==========\n";
+            auto m2 = make_pyramid_sewn();
+            int fi = 0, ei = 0;
+            int a = m2.faces[fi].v[ei];
+            int b = m2.faces[fi].v[(ei+1)%3];
+            Vec3 pa = m2.vertices[a].p;
+            Vec3 pb = m2.vertices[b].p;
+            Vec3 mid = {(pa.x+pb.x)/2, (pa.y+pb.y)/2, (pa.z+pb.z)/2};
+            m2.split_edge(fi, ei, mid);
+            m2.check_sewing_verbose("split_edge");
+            m2.save_off("data/split_edge.off");
+        }                    
+        
+        {
+            std::cout << "\n========== TEST flip_edge ==========\n";
+            auto m3 = make_pyramid_sewn();
+            std::cout << "Initial pyramid:\n";
+            m3.print_neighbors("before_flip");
+            
+            std::cout << "Attempting to flip edge (face 0, edge 2)\n";
+            std::cout << "Face 0 vertices: (" 
+                      << m3.faces[0].v[0] << ","
+                      << m3.faces[0].v[1] << ","
+                      << m3.faces[0].v[2] << ")\n";
+            std::cout << "Face 0 neighbor at edge 2: " << m3.faces[0].neigh[2] << "\n";
+            
+            m3.flip_edge(0, 2);
+            
+            std::cout << "\nAfter flip_edge:\n";
+            m3.check_sewing_verbose("flip_edge");
+            
+            std::cout << "\nDetailed neighbor check after flip:\n";
+            for (size_t i = 0; i < m3.faces.size(); i++) {
+                std::cout << "Face " << i << " (";
+                for (int j = 0; j < 3; j++) {
+                    std::cout << m3.faces[i].v[j];
+                    if (j < 2) std::cout << ",";
+                }
+                std::cout << ") neighbors: [";
+                for (int j = 0; j < 3; j++) {
+                    std::cout << m3.faces[i].neigh[j];
+                    if (j < 2) std::cout << ",";
+                }
+                std::cout << "]\n";
+            }
+            
+            std::cout << "\nSymmetry check:\n";
+            bool ok = true;
+            for (size_t i = 0; i < m3.faces.size(); i++) {
+                for (int j = 0; j < 3; j++) {
+                    int n = m3.faces[i].neigh[j];
+                    if (n != -1) {
+                        int ej = m3.find_edge_index(m3.faces[n], 
+                                                    m3.faces[i].v[(j+1)%3], 
+                                                    m3.faces[i].v[j]);
+                        if (ej == -1 || m3.faces[n].neigh[ej] != (int)i) {
+                            std::cout << "ASYMMETRY: Face " << i 
+                                      << "edge " << j << " -> face " << n 
+                                      << ", but no back reference\n";
+                            ok = false;
+                        }
+                    }
+                }
+            }
+            if (ok) {
+                std::cout << "All neighbors are symmetric\n";
+            }            
+        }
+
         std::cout << "\nMeshes created and saved.\n";
         return 0;
     }
@@ -728,7 +1086,19 @@ int main()
     if(choice == 2)
     {
         MeshSewn m;
-        m.load_off("data/queen.off");
+        m.load_off("data/split_edge.off");
+
+        Viewer viewer(m);
+        viewer.run();
+    }
+
+    if(choice == 3)
+    {
+        MeshSewn m = make_pyramid_sewn();
+        std::cout << "Controls:\n";
+        std::cout << "T - split_triangle\n";
+        std::cout << "E - split_edge\n";
+        std::cout << "R - reset to original mesh\n";
 
         Viewer viewer(m);
         viewer.run();
