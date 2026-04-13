@@ -7,7 +7,7 @@
 #include <utility>
 #include <cmath>
 #include <algorithm>
-
+#include <ctime>
 #include "wavefront.h"
 #include "draw.h"
 #include "app_camera.h"
@@ -114,9 +114,9 @@ struct MeshSewn {
         int f1 = (int)faces.size(); faces.push_back(Face(b, c, m));
         int f2 = (int)faces.size(); faces.push_back(Face(c, a, m));
 
-        sew(fi, 1,  f1, 2);
-        sew(f1, 1,  f2, 2);
-        sew(f2, 1,  fi, 2);
+        sew(fi, 1, f1, 2);
+        sew(f1, 1, f2, 2);
+        sew(f2, 1, fi, 2);
 
         faces[fi].neigh[0] = n0;
         faces[f1].neigh[0] = n1;
@@ -141,9 +141,9 @@ struct MeshSewn {
         int b = faces[fi].v[(ei+1)%3];
         int c = faces[fi].v[(ei+2)%3];
 
-        int fj     = faces[fi].neigh[ei];
-        int fi_bc  = faces[fi].neigh[(ei+1)%3];
-        int fi_ca  = faces[fi].neigh[(ei+2)%3];
+        int fj = faces[fi].neigh[ei];
+        int fi_bc = faces[fi].neigh[(ei+1)%3];
+        int fi_ca = faces[fi].neigh[(ei+2)%3];
 
         int m = (int)vertices.size();
         vertices.push_back(Vertex{pos});
@@ -171,8 +171,8 @@ struct MeshSewn {
             return m;
         }
 
-        int ej    = find_edge_index(faces[fj], a, b);
-        int d     = faces[fj].v[(ej+2)%3];
+        int ej = find_edge_index(faces[fj], a, b);
+        int d = faces[fj].v[(ej+2)%3];
         int fj_bd = faces[fj].neigh[(ej+1)%3];
         int fj_da = faces[fj].neigh[(ej+2)%3];
 
@@ -185,10 +185,10 @@ struct MeshSewn {
         faces[fj] = Face(a, d, m);
 
         // Internal sews
-        sew(fi,  0, fj,  2);   // a-m ↔ m-a
-        sew(fi,  1, f1,  2);   // m-c ↔ c-m
-        sew(fj,  1, f2,  1);   // d-m ↔ m-d
-        sew(f1,  0, f2,  0);   // m-b ↔ b-m
+        sew(fi, 0, fj, 2);   // a-m ↔ m-a
+        sew(fi, 1, f1, 2);   // m-c ↔ c-m
+        sew(fj, 1, f2, 1);   // d-m ↔ m-d
+        sew(f1, 0, f2, 0);   // m-b ↔ b-m
 
         // External neighbours
         faces[fi].neigh[2] = fi_ca;
@@ -226,13 +226,13 @@ struct MeshSewn {
         // Store all neighbors before modification
         int fi_ac = faces[fi].neigh[(ei+2)%3];
         int fi_bc = faces[fi].neigh[(ei+1)%3];
-        int fj_bd = faces[fj].neigh[(ej+2)%3];
-        int fj_ad = faces[fj].neigh[(ej+1)%3];
+        int fj_da = faces[fj].neigh[(ej+2)%3];
+        int fj_bd = faces[fj].neigh[(ej+1)%3];
 
         faces[fi] = Face(a, d, c);
         faces[fj] = Face(b, c, d);
 
-        faces[fi].neigh[0] = fj_ad;
+        faces[fi].neigh[0] = fj_da;
         faces[fi].neigh[1] = fj;
         faces[fi].neigh[2] = fi_ac;
 
@@ -252,8 +252,11 @@ struct MeshSewn {
         };
 
         fix_neigh(fi_bc, fi, fj);
-        fix_neigh(fj_ad, fj, fi);
+        fix_neigh(fj_da, fj, fi);
+        for(auto& f : faces)
+            f.neigh = {-1, -1, -1};
 
+        build_adjacency();
         update_oneFace_per_vertex();
     }
 
@@ -349,6 +352,134 @@ struct MeshSewn {
             return split_edge(fi, boundary_edge, P);
         }
     }
+
+    // InCircle test (2D)
+    double in_circle(const Vec3& A, const Vec3& B, const Vec3& C, const Vec3& D) const
+    {
+        double ax = A.x - D.x, ay = A.y - D.y;
+        double bx = B.x - D.x, by = B.y - D.y;
+        double cx = C.x - D.x, cy = C.y - D.y;
+
+        return ax * (by * (cx*cx + cy*cy) - cy * (bx*bx + by*by))
+            - ay * (bx * (cx*cx + cy*cy) - cx * (bx*bx + by*by))
+            + (ax*ax + ay*ay) * (bx*cy - by*cx);
+    }
+
+    // Check if edge (fi, ei) is locally Delaunay
+    bool is_locally_delaunay(int fi, int ei) const
+    {
+        int fj = faces[fi].neigh[ei];
+        if (fj == -1) return true;  
+
+        const Vec3& A = vertices[faces[fi].v[ei]].p;
+        const Vec3& B = vertices[faces[fi].v[(ei+1)%3]].p;
+        const Vec3& C = vertices[faces[fi].v[(ei+2)%3]].p;
+
+        int ej = find_edge_index(faces[fj], faces[fi].v[ei], faces[fi].v[(ei+1)%3]);
+        const Vec3& D = vertices[faces[fj].v[(ej+2)%3]].p;
+
+        return in_circle(A, B, C, D) <= 0;
+    }
+
+    void make_delaunay()
+    {
+        bool flipped = true;
+        while (flipped)
+        {
+            flipped = false;
+            for (int fi = 0; fi < (int)faces.size(); ++fi)
+            {
+                for (int ei = 0; ei < 3; ++ei)
+                {
+                    if (!is_locally_delaunay(fi, ei))
+                    {
+                        flip_edge(fi, ei);
+                        flipped = true;
+                    }
+                }
+            }
+        }
+    }
+
+    int insert_point_delaunay(const Vec3& P)
+    {
+        // naive insertion
+        int new_vi = insert_point(P);
+        if (new_vi == -1) return -1;
+
+        // Collect all faces incident to new_vi
+        bool flipped = true;
+        while (flipped)
+        {
+            flipped = false;
+            for (int fi = 0; fi < (int)faces.size(); ++fi)
+            {
+                const Face& f = faces[fi];
+                // Check if this face contains new_vi
+                bool has_new = (f.v[0] == new_vi ||
+                                f.v[1] == new_vi ||
+                                f.v[2] == new_vi);
+                if (!has_new) continue;
+
+                for (int ei = 0; ei < 3; ++ei)
+                {
+                    // Skip edges that touch new_vi
+                    if (f.v[ei] == new_vi || f.v[(ei+1)%3] == new_vi) continue;
+
+                    if (!is_locally_delaunay(fi, ei))
+                    {
+                        flip_edge(fi, ei);
+                        flipped = true;
+                        break;
+                    }
+                }
+                if (flipped) break;
+            }
+        }
+
+        return new_vi;
+    }
+
+    Vec3 circumcenter(int fi) const
+    {
+        const Vec3& A = vertices[faces[fi].v[0]].p;
+        const Vec3& B = vertices[faces[fi].v[1]].p;
+        const Vec3& C = vertices[faces[fi].v[2]].p;
+
+        double ax = B.x - A.x, ay = B.y - A.y;
+        double bx = C.x - A.x, by = C.y - A.y;
+
+        double D = 2.0 * (ax * by - ay * bx);
+        if (std::abs(D) < 1e-10)
+            return { (A.x + B.x + C.x) / 3.0,
+                    (A.y + B.y + C.y) / 3.0, 0.0 };
+
+        double ux = (by * (ax*ax + ay*ay) - ay * (bx*bx + by*by)) / D;
+        double uy = (ax * (bx*bx + by*by) - bx * (ax*ax + ay*ay)) / D;
+
+        return { A.x + ux, A.y + uy, 0.0 };
+    }
+
+std::vector<std::pair<Vec3, Vec3>> build_voronoi_edges() const
+{
+    std::vector<std::pair<Vec3, Vec3>> edges;
+
+    for (int fi = 0; fi < (int)faces.size(); ++fi)
+    {
+        for (int ei = 0; ei < 3; ++ei)
+        {
+            int fj = faces[fi].neigh[ei];
+            if (fj == -1) continue;
+            if (fj <= fi) continue;
+
+            Vec3 ci = circumcenter(fi);
+            Vec3 cj = circumcenter(fj);
+            edges.push_back({ci, cj});
+        }
+    }
+
+    return edges;
+}
 
     bool save_off(const std::string& path) const {
         std::ofstream out(path);
@@ -706,6 +837,7 @@ public:
         static bool keyT_pressed = false;
         static bool keyE_pressed = false;
         static bool keyR_pressed = false;
+        static bool keyF_pressed = false;
 
         if(key_state('t') || key_state('T'))
         {
@@ -774,6 +906,8 @@ public:
             {
                 ref = make_pyramid_sewn();
                 split_face_index = 0;
+                flip_mode = false;
+                flip_done = false;
                 rebuild_position_buffer();
                 std::cout << "[R] reset: "
                         << ref.faces.size() << " faces, "
@@ -782,6 +916,46 @@ public:
             }
         }
         else keyR_pressed = false;
+
+        if (key_state('f') || key_state('F'))
+        {
+            if (!keyF_pressed)
+            {
+                int target_fi = -1, target_ei = -1;
+                for (int fi = 0; fi < (int)ref.faces.size() && target_fi == -1; ++fi)
+                {
+                    const Face& f = ref.faces[fi];
+                    for (int ei = 0; ei < 3 && target_fi == -1; ++ei)
+                    {
+                        int fj = f.neigh[ei];
+                        if (fj == -1) continue;
+
+                        auto base_vertex = [&](int v){ return ref.vertices[v].p.z == 0.0; };
+                        bool fi_base = base_vertex(f.v[0]) && base_vertex(f.v[1]) && base_vertex(f.v[2]);
+                        const Face& nf = ref.faces[fj];
+                        bool fj_base = base_vertex(nf.v[0]) && base_vertex(nf.v[1]) && base_vertex(nf.v[2]);
+                        if (fi_base && fj_base)
+                        {
+                            target_fi = fi;
+                            target_ei = ei;
+                        }
+                    }
+                }
+
+                if (target_fi != -1)
+                {
+                    ref.flip_edge(target_fi, target_ei);
+                    rebuild_position_buffer();
+                    std::cout << "[F] Flipped base diagonal (face " << target_fi
+                            << ", edge " << target_ei << ")\n";
+                }
+                else
+                    std::cout << "[F] No base edge to flip.\n";
+
+                keyF_pressed = true;
+            }
+        }
+        else keyF_pressed = false;
 
         // transforms 
         Transform view = camera().view();
@@ -1040,6 +1214,37 @@ private:
         std::cout << "Curvature mesh built.\n";
     }
 
+    void highlight_non_delaunay_edges()
+    {
+        // Reset all to blue
+        for (int i = 0; i < vertex_count; i++) {
+            color_buffer[i*4+0] = 0.1f;
+            color_buffer[i*4+1] = 0.3f;
+            color_buffer[i*4+2] = 1.0f;
+            color_buffer[i*4+3] = 1.0f;
+        }
+
+        int idx = 0;
+        for (int fi = 0; fi < (int)ref.faces.size(); ++fi) {
+            bool bad = false;
+            for (int ei = 0; ei < 3; ++ei)
+                if (!ref.is_locally_delaunay(fi, ei)) bad = true;
+
+            float r = bad ? 1.0f : 0.1f;
+            float g = bad ? 0.0f : 0.3f;
+            float b = bad ? 0.0f : 1.0f;
+
+            for (int i = 0; i < 3; i++) {
+                color_buffer[idx*4+0] = r;
+                color_buffer[idx*4+1] = g;
+                color_buffer[idx*4+2] = b;
+                color_buffer[idx*4+3] = 1.0f;
+                idx++;
+            }
+        }
+        update_color_buffer();
+    }
+
     // Private members
     MeshSewn& ref;
     GLuint program;
@@ -1060,14 +1265,383 @@ private:
 
     // curvature
     bool curvature_initialized;
+
+    // flip mode
+    bool flip_mode = false;
+    bool flip_done = false;
+    std::vector<Vec3> flip_pts = {
+        {0.2, 0.2, 0}, {0.7, 0.1, 0}, {0.5, 0.7, 0},
+        {0.3, 0.5, 0}, {0.6, 0.4, 0}, {0.1, 0.8, 0},
+        {0.8, 0.6, 0}, {0.4, 0.3, 0}
+    };
+};
+
+class DelaunayViewer : public AppCamera
+{
+public:
+    DelaunayViewer()
+        : AppCamera(1600, 900),
+        vao(0), vbo_position(0), vbo_color(0),
+        vertex_count(0), naive_index(0), delaunay_index(0), delaunay_done(false),
+        vbo_voronoi(0), vao_voronoi(0), voronoi_vertex_count(0), show_voronoi(false)
+    {
+        srand(static_cast<unsigned>(time(nullptr)));
+        for (int i = 0; i < 25; i++)
+            pts.push_back({
+                0.1 + 0.8 * (rand() / (double)RAND_MAX),
+                0.1 + 0.8 * (rand() / (double)RAND_MAX),
+                0.0
+            });
+    }
+
+    int init()
+    {
+        camera().lookat(Point(0.5f, 0.5f, 0.f), 1.5f);
+        glEnable(GL_DEPTH_TEST);
+        glClearColor(0.2f, 0.2f, 0.2f, 1.f);
+        glDisable(GL_CULL_FACE);
+
+        program = read_program("shaders/mesh_color.glsl");
+        program_print_errors(program);
+
+        reset_mesh();
+        init_gl_buffers();
+
+        // Voronoi VBO
+        glGenBuffers(1, &vbo_voronoi);
+        glGenVertexArrays(1, &vao_voronoi);
+        glBindVertexArray(vao_voronoi);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_voronoi);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, 0);
+        glEnableVertexAttribArray(0);
+        glBindVertexArray(0);
+        return 0;
+    }
+
+    int render()
+    {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        static bool keyI_pressed = false;
+        if (key_state('i') || key_state('I'))
+        {
+            if (!keyI_pressed)
+            {
+                if (point_index < (int)pts.size())
+                {
+                    mesh.insert_point(pts[point_index]);
+                    std::cout << "[I] Naive insert point " << point_index
+                            << " | faces: " << mesh.faces.size() << "\n";
+                    point_index++;
+                    delaunay_done = false;
+                    rebuild_buffers();
+                    highlight_non_delaunay();
+                }
+                else
+                    std::cout << "[I] All points inserted. Press R to reset.\n";
+                
+                if (show_voronoi) rebuild_voronoi_buffer();
+                keyI_pressed = true;
+            }
+        }
+        else keyI_pressed = false;
+    
+        static bool keyD_pressed = false;
+        if (key_state('d') || key_state('D'))
+        {
+            if (!keyD_pressed)
+            {
+                if (point_index < (int)pts.size())
+                {
+                    mesh.insert_point_delaunay(pts[point_index]);
+                    std::cout << "[D] Delaunay insert point " << point_index
+                            << " | faces: " << mesh.faces.size() << "\n";
+                    point_index++;
+                    delaunay_done = false;
+                    rebuild_buffers();
+                    highlight_non_delaunay();
+                }
+                else
+                    std::cout << "[D] All points inserted. Press R to reset.\n";
+                
+                if (show_voronoi) rebuild_voronoi_buffer();
+                keyD_pressed = true;
+            }
+        }
+        else keyD_pressed = false;
+
+        static bool keySpace_pressed = false;
+        if (key_state(' '))
+        {
+            if (!keySpace_pressed)
+            {
+                if (delaunay_done)
+                {
+                    std::cout << "[Space] Already Delaunay.\n";
+                }
+                else
+                {
+                    bool found = false;
+                    for (int fi = 0; fi < (int)mesh.faces.size() && !found; ++fi)
+                        for (int ei = 0; ei < 3 && !found; ++ei)
+                            if (!mesh.is_locally_delaunay(fi, ei))
+                            {
+                                mesh.flip_edge(fi, ei);
+                                std::cout << "[Space] Flipped edge (face " << fi
+                                          << ", edge " << ei << ")\n";
+                                found = true;
+                            }
+
+                    if (!found)
+                    {
+                        delaunay_done = true;
+                        std::cout << "[Space] Delaunay complete!\n";
+                    }
+
+                    rebuild_buffers();
+                    highlight_non_delaunay();
+                }
+                keySpace_pressed = true;
+            }
+        }
+        else keySpace_pressed = false;
+
+        // R — reset
+        static bool keyR_pressed = false;
+        if (key_state('r') || key_state('R'))
+        {
+            if (!keyR_pressed)
+            {
+                reset_mesh();
+                rebuild_buffers();
+                std::cout << "[R] Reset.\n";
+                keyR_pressed = true;
+            }
+        }
+        else keyR_pressed = false;
+
+        static bool keyV_pressed = false;
+        if (key_state('n') || key_state('N'))
+        {
+            if (!keyV_pressed)
+            {
+                show_voronoi = !show_voronoi;
+                if (show_voronoi) rebuild_voronoi_buffer();
+                std::cout << "[V] Voronoi " << (show_voronoi ? "ON" : "OFF") << "\n";
+                keyV_pressed = true;
+            }
+        }
+        else keyV_pressed = false;
+
+        // Render
+        Transform view = camera().view();
+        Transform proj = camera().projection(window_width(), window_height(), 45);
+        Transform mvp = proj * view * Identity();
+
+        glUseProgram(program);
+        program_uniform(program, "mvpMatrix", mvp);
+        program_uniform(program, "useVertexColor", 1);
+        program_uniform(program, "baseColor", vec3(0.1f, 0.3f, 1.0f));
+
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        glBindVertexArray(vao);
+        glDrawArrays(GL_TRIANGLES, 0, vertex_count);
+        glBindVertexArray(0);
+
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        glEnable(GL_POLYGON_OFFSET_LINE);
+        glPolygonOffset(-1.f, -1.f);
+        program_uniform(program, "useVertexColor", 0);
+        program_uniform(program, "baseColor", vec3(0.0f, 0.0f, 0.0f));
+        glBindVertexArray(vao);
+        glDrawArrays(GL_TRIANGLES, 0, vertex_count);
+        glBindVertexArray(0);
+        glDisable(GL_POLYGON_OFFSET_LINE);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+        // Voronoi overlay
+        if (show_voronoi && voronoi_vertex_count > 0)
+        {
+            program_uniform(program, "useVertexColor", 0);
+            program_uniform(program, "baseColor", vec3(1.0f, 0.85f, 0.0f));
+
+            glBindVertexArray(vao_voronoi);
+            glLineWidth(2.0f);
+            glDrawArrays(GL_LINES, 0, voronoi_vertex_count);
+            glLineWidth(1.0f);
+            glBindVertexArray(0);
+        }
+        return 1;
+    }
+
+    int quit()
+    {
+        glDeleteBuffers(1, &vbo_voronoi);
+        glDeleteBuffers(1, &vbo_position);
+        glDeleteBuffers(1, &vbo_color);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteVertexArrays(1, &vao_voronoi);
+        release_program(program);
+        return 0;
+    }
+
+private:
+    void reset_mesh()
+    {
+        mesh.make_bounding_box(pts, 0.5);
+        point_index = 0;
+        delaunay_done = false;
+    }
+
+    void init_gl_buffers()
+    {
+        vertex_count = (int)mesh.faces.size() * 3;
+
+        std::vector<float> positions;
+        for (const auto& f : mesh.faces)
+            for (int i = 0; i < 3; i++) {
+                const auto& p = mesh.vertices[f.v[i]].p;
+                positions.push_back((float)p.x);
+                positions.push_back((float)p.y);
+                positions.push_back((float)p.z);
+            }
+
+        color_buffer.assign(vertex_count * 4, 0.0f);
+        for (int i = 0; i < vertex_count; i++) {
+            color_buffer[i*4+0] = 0.1f;
+            color_buffer[i*4+1] = 0.3f;
+            color_buffer[i*4+2] = 1.0f;
+            color_buffer[i*4+3] = 1.0f;
+        }
+
+        glGenVertexArrays(1, &vao);
+        glBindVertexArray(vao);
+
+        glGenBuffers(1, &vbo_position);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_position);
+        glBufferData(GL_ARRAY_BUFFER, positions.size()*sizeof(float), positions.data(), GL_DYNAMIC_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, 0);
+        glEnableVertexAttribArray(0);
+
+        glGenBuffers(1, &vbo_color);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_color);
+        glBufferData(GL_ARRAY_BUFFER, color_buffer.size()*sizeof(float), color_buffer.data(), GL_DYNAMIC_DRAW);
+        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 0, 0);
+        glEnableVertexAttribArray(3);
+
+        glBindVertexArray(0);
+    }
+
+    void rebuild_buffers()
+    {
+        vertex_count = (int)mesh.faces.size() * 3;
+
+        std::vector<float> positions;
+        for (const auto& f : mesh.faces)
+            for (int i = 0; i < 3; i++) {
+                const auto& p = mesh.vertices[f.v[i]].p;
+                positions.push_back((float)p.x);
+                positions.push_back((float)p.y);
+                positions.push_back((float)p.z);
+            }
+
+        color_buffer.assign(vertex_count * 4, 0.0f);
+        for (int i = 0; i < vertex_count; i++) {
+            color_buffer[i*4+0] = 0.1f;
+            color_buffer[i*4+1] = 0.3f;
+            color_buffer[i*4+2] = 1.0f;
+            color_buffer[i*4+3] = 1.0f;
+        }
+
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_position);
+        glBufferData(GL_ARRAY_BUFFER, positions.size()*sizeof(float), positions.data(), GL_DYNAMIC_DRAW);
+
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_color);
+        glBufferData(GL_ARRAY_BUFFER, color_buffer.size()*sizeof(float), color_buffer.data(), GL_DYNAMIC_DRAW);
+    }
+
+    void highlight_non_delaunay()
+    {
+        int idx = 0;
+        for (int fi = 0; fi < (int)mesh.faces.size(); ++fi)
+        {
+            bool bad = false;
+            for (int ei = 0; ei < 3; ++ei)
+                if (!mesh.is_locally_delaunay(fi, ei)) bad = true;
+
+            float r = bad ? 0.7f : 0.1f;
+            float g = bad ? 0.2f : 0.3f;
+            float b = bad ? 0.2f : 1.0f;
+
+            for (int i = 0; i < 3; i++) {
+                color_buffer[idx*4+0] = r;
+                color_buffer[idx*4+1] = g;
+                color_buffer[idx*4+2] = b;
+                color_buffer[idx*4+3] = 1.0f;
+                idx++;
+            }
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_color);
+        glBufferData(GL_ARRAY_BUFFER, color_buffer.size()*sizeof(float), color_buffer.data(), GL_DYNAMIC_DRAW);
+    }
+
+    void rebuild_voronoi_buffer()
+    {
+        auto edges = mesh.build_voronoi_edges();
+        std::cout << "Total faces: " << mesh.faces.size() 
+                << " Voronoi edges: " << edges.size() << "\n";
+
+        for (int fi = 0; fi < (int)mesh.faces.size(); ++fi)
+        {
+            Vec3 c = mesh.circumcenter(fi);
+            std::cout << "Face " << fi << " circumcenter: (" 
+                    << c.x << ", " << c.y << ")\n";
+        }
+        voronoi_vertex_count = (int)edges.size() * 2;
+
+        std::vector<float> positions;
+        positions.reserve(voronoi_vertex_count * 3);
+        for (const auto& e : edges)
+        {
+            positions.push_back((float)e.first.x);
+            positions.push_back((float)e.first.y);
+            positions.push_back((float)e.first.z);
+            positions.push_back((float)e.second.x);
+            positions.push_back((float)e.second.y);
+            positions.push_back((float)e.second.z);
+        }
+
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_voronoi);
+        glBufferData(GL_ARRAY_BUFFER,
+                    positions.size() * sizeof(float),
+                    positions.data(),
+                    GL_DYNAMIC_DRAW);
+    }
+
+    MeshSewn mesh;
+    std::vector<Vec3> pts;
+
+    GLuint program;
+    GLuint vao, vbo_position, vbo_color;
+    GLuint vbo_voronoi;
+    GLuint vao_voronoi;
+    int vertex_count;
+    int naive_index;
+    int delaunay_index;
+    bool delaunay_done;
+    int point_index;
+    int voronoi_vertex_count;
+    bool show_voronoi;
+    std::vector<float> color_buffer;
 };
 
 int main()
 {
     int choice;
-    std::cout << "1 - create test meshes only\n";
-    std::cout << "2 - load queen and open viewer\n";
-    std::cout << "3 - split operations\n";
+    std::cout << "1 - create meshes\n";
+    std::cout << "2 - load mesh and open viewer (TP2-3)\n";
+    std::cout << "3 - split operations (TP4)\n";
+    std::cout << "4 - Delaunay and Voronoi\n";
     std::cin >> choice;
 
     if(choice == 1)
@@ -1200,10 +1774,10 @@ int main()
             Vec3 B{4, 0, 0};
             Vec3 C{0, 4, 0};
 
-            Vec3 P_inside   {1, 1, 0};
-            Vec3 P_outside  {3, 3, 0};
+            Vec3 P_inside {1, 1, 0};
+            Vec3 P_outside {3, 3, 0};
             Vec3 P_boundary {2, 0, 0};
-            Vec3 P_vertex   {0, 0, 0};
+            Vec3 P_vertex {0, 0, 0};
 
             double r1 = m.in_triangle(A, B, C, P_inside);
             double r2 = m.in_triangle(A, B, C, P_outside);
@@ -1212,9 +1786,9 @@ int main()
 
             std::cout << "\n== in_triangle test ==\n";
             std::cout << "P inside (expected > 0): " << r1
-                    << (r1 > 0  ? "[OK]" : "[FAIL]") << "\n";
+                    << (r1 > 0 ? "[OK]" : "[FAIL]") << "\n";
             std::cout << "P outside (expected < 0): " << r2
-                    << (r2 < 0  ? "[OK]" : "[FAIL]") << "\n";
+                    << (r2 < 0 ? "[OK]" : "[FAIL]") << "\n";
             std::cout << "P boundary (expected = 0): " << r3
                     << (r3 == 0 ? "[OK]" : "[FAIL]") << "\n";
             std::cout << "P vertex (expected = 0): " << r4
@@ -1243,7 +1817,69 @@ int main()
             }
 
             bool ok = m.check_sewing_verbose("naive_insertion");
-            m.save_off("data/naive_insertion.off");
+            // m.save_off("data/naive_insertion.off");
+        }
+
+        {
+            std::cout << "\n== Delaunay test ==\n";
+
+            std::vector<Vec3> pts = {
+                {0.2, 0.2, 0}, {0.7, 0.1, 0}, {0.5, 0.7, 0},
+                {0.3, 0.5, 0}, {0.6, 0.4, 0}, {0.1, 0.8, 0},
+                {0.8, 0.6, 0}, {0.4, 0.3, 0}
+            };
+
+            // Test 1: make_delaunay on naive triangulation
+            {
+                MeshSewn m;
+                m.make_bounding_box(pts, 0.5);
+                for (const auto& p : pts)
+                    m.insert_point(p);
+
+                std::cout << "Before make_delaunay:\n";
+                int bad = 0;
+                for (int fi = 0; fi < (int)m.faces.size(); ++fi)
+                    for (int ei = 0; ei < 3; ++ei)
+                        if (!m.is_locally_delaunay(fi, ei)) ++bad;
+                std::cout << "Non-Delaunay edges: " << bad << "\n";
+
+                m.make_delaunay();
+
+                bad = 0;
+                for (int fi = 0; fi < (int)m.faces.size(); ++fi)
+                    for (int ei = 0; ei < 3; ++ei)
+                        if (!m.is_locally_delaunay(fi, ei)) ++bad;
+                std::cout << "After make_delaunay:\n";
+                std::cout << "Non-Delaunay edges: " << bad
+                        << (bad == 0 ? "[OK]" : "[FAIL]") << "\n";
+                m.check_sewing_verbose("make_delaunay");
+                m.save_off("data/delaunay.off");
+            }
+
+            // Test 2: incremental insert_point_delaunay
+            {
+                MeshSewn m;
+                m.make_bounding_box(pts, 0.5);
+
+                for (int i = 0; i < (int)pts.size(); ++i)
+                {
+                    m.insert_point_delaunay(pts[i]);
+
+                    // Check Delaunay property after each insertion
+                    int bad = 0;
+                    for (int fi = 0; fi < (int)m.faces.size(); ++fi)
+                        for (int ei = 0; ei < 3; ++ei)
+                            if (!m.is_locally_delaunay(fi, ei)) ++bad;
+
+                    std::cout << "After insert " << i
+                            << ": faces=" << m.faces.size()
+                            << " bad_edges=" << bad
+                            << (bad == 0 ? "[OK]" : "[FAIL]") << "\n";
+                }
+
+                m.check_sewing_verbose("insert_point_delaunay");
+                m.save_off("data/delaunay_incremental.off");
+            }
         }
 
         std::cout << "\nMeshes created and saved.\n";
@@ -1253,7 +1889,7 @@ int main()
     if(choice == 2)
     {
         MeshSewn m;
-        m.load_off("data/split_edge.off");
+        m.load_off("data/queen.off");
 
         Viewer viewer(m);
         viewer.run();
@@ -1265,9 +1901,23 @@ int main()
         std::cout << "Controls:\n";
         std::cout << "T - split_triangle\n";
         std::cout << "E - split_edge\n";
+        std::cout << "F - edge flip\n";
         std::cout << "R - reset to original mesh\n";
 
         Viewer viewer(m);
+        viewer.run();
+    }
+
+    if(choice == 4)
+    {
+        std::cout << "Controls:\n";
+        std::cout << "I - naive insert next point\n";
+        std::cout << "D - insert next point (Delaunay)\n";
+        std::cout << "Space - one Lawson flip step\n";
+        std::cout << "R - reset\n";
+        std::cout << "N - toggle Voronoi overlay\n";
+
+        DelaunayViewer viewer;
         viewer.run();
     }
 
